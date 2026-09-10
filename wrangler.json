@@ -1,6 +1,6 @@
 {
   "name": "clear-ip",
-  "main": "worker/index.js",
+  "main": "index.js",
   "compatibility_date": "2026-05-15",
   "observability": {
     "enabled": true
