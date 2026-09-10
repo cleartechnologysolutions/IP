@@ -1,4 +1,4 @@
-const IPAPI_ENDPOINT = "https://api.ipapi.is/";
+const IPWHOIS_ENDPOINT = "https://ipwho.is/";
 const RIPESTAT_PREFIXES_ENDPOINT = "https://stat.ripe.net/data/announced-prefixes/data.json";
 
 function escapeHtml(value) {
@@ -21,25 +21,6 @@ function getClientIp(request) {
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     ""
   );
-}
-
-function yesNoUnknown(value) {
-  return value === true ? "Yes" : value === false ? "No" : "Unknown";
-}
-
-function getRiskSummary(ipInfo) {
-  const flags = [];
-  if (ipInfo.is_abuser) flags.push("known abuse");
-  if (ipInfo.is_proxy) flags.push("proxy");
-  if (ipInfo.is_vpn) flags.push("vpn");
-  if (ipInfo.is_tor) flags.push("tor");
-  if (ipInfo.is_datacenter) flags.push("hosting/datacenter");
-
-  if (flags.length) return `Flagged: ${flags.join(", ")}`;
-  if (["is_abuser", "is_proxy", "is_vpn", "is_tor", "is_datacenter"].some((key) => key in ipInfo)) {
-    return "No risk flags returned";
-  }
-  return "Unavailable without IPAPI_KEY";
 }
 
 async function fetchJson(url, timeoutMs = 2200) {
@@ -65,16 +46,11 @@ async function fetchJson(url, timeoutMs = 2200) {
   }
 }
 
-async function getIpEnrichment(ip, asnNumber, apiKey) {
+async function getIpEnrichment(ip, asnNumber) {
   const enrichment = {
-    reputation: "Unavailable",
-    proxy: "Unknown",
-    vpn: "Unknown",
-    tor: "Unknown",
-    hosting: "Unknown",
-    abuseScore: "Unknown",
-    connectionType: "Unknown",
-    connectionDomain: "Unknown",
+    isp: "",
+    organization: "",
+    asn: "",
     prefixes: [],
     prefixCount: 0,
     notes: [],
@@ -82,26 +58,13 @@ async function getIpEnrichment(ip, asnNumber, apiKey) {
 
   if (ip) {
     try {
-      const url = new URL(IPAPI_ENDPOINT);
-      url.searchParams.set("q", ip);
-      if (apiKey) url.searchParams.set("key", apiKey);
-      const ipInfo = await fetchJson(url, 2500);
-      const asn = typeof ipInfo.asn === "object" ? ipInfo.asn : {};
-      const company = typeof ipInfo.company === "object" ? ipInfo.company : {};
-      enrichment.reputation = getRiskSummary(ipInfo);
-      enrichment.proxy = yesNoUnknown(ipInfo.is_proxy);
-      enrichment.vpn = yesNoUnknown(ipInfo.is_vpn);
-      enrichment.tor = yesNoUnknown(ipInfo.is_tor);
-      enrichment.hosting = yesNoUnknown(ipInfo.is_datacenter);
-      enrichment.abuseScore = company.abuser_score || asn.abuser_score || "Unknown";
-      enrichment.connectionType = asn.type || company.type || "Unknown";
-      enrichment.connectionDomain = company.domain || asn.domain || "Unknown";
-      enrichment.ipwhoisIsp = company.name || (typeof ipInfo.company === "string" ? ipInfo.company : "");
-      enrichment.ipwhoisOrg = asn.org || "";
-      enrichment.ipwhoisAsn = asn.asn || String(ipInfo.asn || "").match(/AS(\d+)/i)?.[1] || "";
-      if (!apiKey) enrichment.notes.push("Add the IPAPI_KEY Worker secret to enable full reputation details.");
+      const ipInfo = await fetchJson(`${IPWHOIS_ENDPOINT}${encodeURIComponent(ip)}`, 2500);
+      if (ipInfo.success === false) throw new Error(ipInfo.message || "lookup failed");
+      enrichment.isp = ipInfo.connection?.isp || "";
+      enrichment.organization = ipInfo.connection?.org || "";
+      enrichment.asn = ipInfo.connection?.asn || "";
     } catch (error) {
-      enrichment.notes.push(`IP intelligence lookup failed: ${error.message || "unknown error"}`);
+      enrichment.notes.push(`ISP lookup failed: ${error.message || "unknown error"}`);
     }
   }
 
@@ -124,28 +87,20 @@ async function getIpEnrichment(ip, asnNumber, apiKey) {
   return enrichment;
 }
 
-async function getRequestDetails(request, env) {
+async function getRequestDetails(request) {
   const cf = request.cf || {};
   const ip = getClientIp(request);
   const asnNumber = cf.asn || 0;
-  const enrichment = await getIpEnrichment(ip, asnNumber, env?.IPAPI_KEY);
-  const isp = enrichment.ipwhoisIsp || enrichment.ipwhoisOrg || cf.asOrganization || "Unknown";
-  const asn = enrichment.ipwhoisAsn ? `AS${enrichment.ipwhoisAsn}` : asnNumber ? `AS${asnNumber}` : "Unknown";
+  const enrichment = await getIpEnrichment(ip, asnNumber);
+  const isp = enrichment.isp || enrichment.organization || cf.asOrganization || "Unknown";
+  const asn = enrichment.asn ? `AS${enrichment.asn}` : asnNumber ? `AS${asnNumber}` : "Unknown";
 
   return {
     ip,
     version: getIpVersion(ip),
     isp,
     asn,
-    asOrganization: cf.asOrganization || enrichment.ipwhoisOrg || "Unknown",
-    reputation: enrichment.reputation,
-    proxy: enrichment.proxy,
-    vpn: enrichment.vpn,
-    tor: enrichment.tor,
-    hosting: enrichment.hosting,
-    abuseScore: enrichment.abuseScore,
-    connectionType: enrichment.connectionType,
-    connectionDomain: enrichment.connectionDomain,
+    asOrganization: enrichment.organization || cf.asOrganization || "Unknown",
     prefixCount: enrichment.prefixCount,
     prefixes: enrichment.prefixes,
     notes: enrichment.notes,
@@ -160,8 +115,8 @@ async function getRequestDetails(request, env) {
   };
 }
 
-async function jsonResponse(request, env) {
-  const details = await getRequestDetails(request, env);
+async function jsonResponse(request) {
+  const details = await getRequestDetails(request);
   return Response.json(details, {
     headers: {
       "cache-control": "no-store",
@@ -179,20 +134,12 @@ function textResponse(request) {
   });
 }
 
-async function pageResponse(request, env) {
-  const details = await getRequestDetails(request, env);
+async function pageResponse(request) {
+  const details = await getRequestDetails(request);
   const rows = [
     ["ISP / network", details.isp],
-    ["ASN", details.asn],
     ["ASN org", details.asOrganization],
-    ["IP reputation", details.reputation],
-    ["Abuse score", details.abuseScore],
-    ["Proxy", details.proxy],
-    ["VPN", details.vpn],
-    ["Tor", details.tor],
-    ["Hosting/datacenter", details.hosting],
-    ["Connection type", details.connectionType],
-    ["Connection domain", details.connectionDomain],
+    ["ASN", details.asn],
     ["IP version", details.version],
     ["Country", details.country],
     ["Region", details.region],
@@ -533,7 +480,7 @@ async function pageResponse(request, env) {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request) {
     const url = new URL(request.url);
 
     if (url.pathname === "/raw" || url.pathname === "/text") {
@@ -541,9 +488,9 @@ export default {
     }
 
     if (url.pathname === "/json" || url.pathname === "/api/ip") {
-      return jsonResponse(request, env);
+      return jsonResponse(request);
     }
 
-    return pageResponse(request, env);
+    return pageResponse(request);
   },
 };

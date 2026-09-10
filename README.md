@@ -8,6 +8,4 @@ Deploy command:
 npx wrangler deploy
 ```
 
-The app works without bindings. To enable full IP reputation details, create a
-free ipapi.is account and add its API key as a Cloudflare Worker secret named
-`IPAPI_KEY`.
+The app works without bindings or API keys.
