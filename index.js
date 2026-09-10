@@ -92,7 +92,8 @@ async function getRequestDetails(request) {
 
   return {
     ip,
-    version: getIpVersion(ip),
+    ipv4: getIpVersion(ip) === "IPv4" ? ip : "",
+    ipv6: getIpVersion(ip) === "IPv6" ? ip : "",
     isp,
     asn,
     prefixCount: enrichment.prefixCount,
@@ -100,26 +101,25 @@ async function getRequestDetails(request) {
     country: cf.country || "Unknown",
     city: cf.city || "Unknown",
     region: cf.region || "Unknown",
-    regionCode: cf.regionCode || "Unknown",
     postalCode: cf.postalCode || "Unknown",
-    timezone: cf.timezone || "Unknown",
     userAgent: request.headers.get("user-agent") || "Unknown",
   };
 }
 
 async function textResponse(request) {
   const details = await getRequestDetails(request);
+  const url = new URL(request.url);
+  const ipv4 = url.searchParams.get("ipv4") || details.ipv4 || "Not available";
+  const ipv6 = url.searchParams.get("ipv6") || details.ipv6 || "Not available";
   const lines = [
-    ["Public IP", details.ip || "Unknown"],
+    ["IPv4", ipv4],
+    ["IPv6", ipv6],
     ["ISP / Network", details.isp],
     ["ASN", details.asn],
-    ["IP Version", details.version],
     ["Country", details.country],
     ["Region", details.region],
-    ["Region Code", details.regionCode],
     ["City", details.city],
     ["Postal Code", details.postalCode],
-    ["Timezone", details.timezone],
     ["User Agent", details.userAgent],
   ].map(([label, value]) => `${label}: ${value}`);
 
@@ -137,15 +137,14 @@ async function textResponse(request) {
 async function pageResponse(request) {
   const details = await getRequestDetails(request);
   const rows = [
+    ["IPv4", details.ipv4 || "Checking...", "ipv4-value"],
+    ["IPv6", details.ipv6 || "Checking...", "ipv6-value"],
     ["ISP / network", details.isp],
     ["ASN", details.asn],
-    ["IP version", details.version],
     ["Country", details.country],
     ["Region", details.region],
-    ["Region code", details.regionCode],
     ["City", details.city],
     ["Postal code", details.postalCode],
-    ["Timezone", details.timezone],
   ];
   const prefixText = details.prefixes.length
     ? details.prefixes.join("\n")
@@ -414,7 +413,7 @@ async function pageResponse(request) {
         <h1>Clear IP</h1>
         <p>See the public IP address this site sees from your current connection.</p>
         <div class="links">
-          <a href="/raw">Raw details</a>
+          <a class="raw-link" href="/raw">Raw details</a>
         </div>
       </aside>
 
@@ -423,13 +422,13 @@ async function pageResponse(request) {
         <p class="ip" id="ip">${escapeHtml(details.ip || "Unknown")}</p>
         <div class="actions">
           <button type="button" id="copy">Copy IP</button>
-          <a class="button secondary" href="/raw">Open raw</a>
+          <a class="button secondary raw-link" href="/raw">Open raw</a>
         </div>
 
         <div class="details">
           ${rows
             .map(
-              ([label, value]) => `<div class="detail"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`
+              ([label, value, id]) => `<div class="detail"><span>${escapeHtml(label)}</span><strong${id ? ` id="${id}"` : ""}>${escapeHtml(value)}</strong></div>`
             )
             .join("")}
         </div>
@@ -448,6 +447,38 @@ async function pageResponse(request) {
   </main>
   <script>
     const copyButton = document.getElementById("copy");
+    const ipValues = {
+      ipv4: ${JSON.stringify(details.ipv4 || "")},
+      ipv6: ${JSON.stringify(details.ipv6 || "")},
+    };
+
+    function updateRawLinks() {
+      const params = new URLSearchParams();
+      params.set("ipv4", ipValues.ipv4 || "Not available");
+      params.set("ipv6", ipValues.ipv6 || "Not available");
+      document.querySelectorAll(".raw-link").forEach((link) => {
+        link.href = "/raw?" + params.toString();
+      });
+    }
+
+    async function loadIp(version, endpoint) {
+      const element = document.getElementById(version + "-value");
+      try {
+        const response = await fetch(endpoint, { cache: "no-store" });
+        if (!response.ok) throw new Error("lookup failed");
+        const result = await response.json();
+        ipValues[version] = result.ip || "Not available";
+      } catch {
+        ipValues[version] = ipValues[version] || "Not available";
+      }
+      if (element) element.textContent = ipValues[version];
+      updateRawLinks();
+    }
+
+    updateRawLinks();
+    loadIp("ipv4", "https://api.ipify.org?format=json");
+    loadIp("ipv6", "https://api6.ipify.org?format=json");
+
     copyButton?.addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText(document.getElementById("ip")?.textContent?.trim() || "");
