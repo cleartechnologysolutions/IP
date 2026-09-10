@@ -53,7 +53,6 @@ async function getIpEnrichment(ip, asnNumber) {
     asn: "",
     prefixes: [],
     prefixCount: 0,
-    notes: [],
   };
 
   if (ip) {
@@ -63,9 +62,7 @@ async function getIpEnrichment(ip, asnNumber) {
       enrichment.isp = ipInfo.connection?.isp || "";
       enrichment.organization = ipInfo.connection?.org || "";
       enrichment.asn = ipInfo.connection?.asn || "";
-    } catch (error) {
-      enrichment.notes.push(`ISP lookup failed: ${error.message || "unknown error"}`);
-    }
+    } catch {}
   }
 
   if (asnNumber) {
@@ -79,9 +76,7 @@ async function getIpEnrichment(ip, asnNumber) {
         .map((item) => item.prefix)
         .filter(Boolean)
         .slice(0, 30);
-    } catch (error) {
-      enrichment.notes.push(`ASN prefix lookup failed: ${error.message || "unknown error"}`);
-    }
+    } catch {}
   }
 
   return enrichment;
@@ -100,33 +95,38 @@ async function getRequestDetails(request) {
     version: getIpVersion(ip),
     isp,
     asn,
-    asOrganization: enrichment.organization || cf.asOrganization || "Unknown",
     prefixCount: enrichment.prefixCount,
     prefixes: enrichment.prefixes,
-    notes: enrichment.notes,
     country: cf.country || "Unknown",
     city: cf.city || "Unknown",
     region: cf.region || "Unknown",
     regionCode: cf.regionCode || "Unknown",
     postalCode: cf.postalCode || "Unknown",
     timezone: cf.timezone || "Unknown",
-    colo: cf.colo || "Unknown",
     userAgent: request.headers.get("user-agent") || "Unknown",
   };
 }
 
-async function jsonResponse(request) {
+async function textResponse(request) {
   const details = await getRequestDetails(request);
-  return Response.json(details, {
-    headers: {
-      "cache-control": "no-store",
-      "access-control-allow-origin": "*",
-    },
-  });
-}
+  const lines = [
+    ["Public IP", details.ip || "Unknown"],
+    ["ISP / Network", details.isp],
+    ["ASN", details.asn],
+    ["IP Version", details.version],
+    ["Country", details.country],
+    ["Region", details.region],
+    ["Region Code", details.regionCode],
+    ["City", details.city],
+    ["Postal Code", details.postalCode],
+    ["Timezone", details.timezone],
+    ["User Agent", details.userAgent],
+  ].map(([label, value]) => `${label}: ${value}`);
 
-function textResponse(request) {
-  return new Response(`${getClientIp(request)}\n`, {
+  lines.push("", `Announced Prefixes (${details.prefixCount}):`);
+  lines.push(...(details.prefixes.length ? details.prefixes : ["None returned"]));
+
+  return new Response(`${lines.join("\n")}\n`, {
     headers: {
       "content-type": "text/plain; charset=utf-8",
       "cache-control": "no-store",
@@ -138,7 +138,6 @@ async function pageResponse(request) {
   const details = await getRequestDetails(request);
   const rows = [
     ["ISP / network", details.isp],
-    ["ASN org", details.asOrganization],
     ["ASN", details.asn],
     ["IP version", details.version],
     ["Country", details.country],
@@ -147,7 +146,6 @@ async function pageResponse(request) {
     ["City", details.city],
     ["Postal code", details.postalCode],
     ["Timezone", details.timezone],
-    ["Cloudflare colo", details.colo],
   ];
   const prefixText = details.prefixes.length
     ? details.prefixes.join("\n")
@@ -155,7 +153,6 @@ async function pageResponse(request) {
   const prefixSummary = details.prefixCount > details.prefixes.length
     ? `Showing first ${details.prefixes.length} of ${details.prefixCount} announced prefixes.`
     : `${details.prefixCount} announced prefixes found.`;
-  const notesText = details.notes.length ? details.notes.join("\n") : "No lookup notes.";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -417,8 +414,7 @@ async function pageResponse(request) {
         <h1>Clear IP</h1>
         <p>See the public IP address this site sees from your current connection.</p>
         <div class="links">
-          <a href="/raw">Plain text IP</a>
-          <a href="/json">JSON details</a>
+          <a href="/raw">Raw details</a>
         </div>
       </aside>
 
@@ -447,10 +443,6 @@ async function pageResponse(request) {
           <pre>${escapeHtml(prefixSummary)}\n\n${escapeHtml(prefixText)}</pre>
         </div>
 
-        <div class="console">
-          <span>Lookup notes</span>
-          <pre>${escapeHtml(notesText)}</pre>
-        </div>
       </section>
     </section>
   </main>
@@ -485,10 +477,6 @@ export default {
 
     if (url.pathname === "/raw" || url.pathname === "/text") {
       return textResponse(request);
-    }
-
-    if (url.pathname === "/json" || url.pathname === "/api/ip") {
-      return jsonResponse(request);
     }
 
     return pageResponse(request);
